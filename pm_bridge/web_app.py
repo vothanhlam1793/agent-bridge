@@ -73,6 +73,14 @@ def perform_sync_core(is_manual=False):
                 state_db.add_log('COMMAND', f'Đã trả kết quả {count} lệnh Outlook; xem bảng lệnh để biết thành công/lỗi/chưa rõ', 'info')
         headers = {'Authorization': 'Bearer ' + settings['api_key'], 'X-Client-ID': settings['client_id']}
         state_db.add_log('SYNC', 'Bắt đầu: ' + ('Thủ công' if is_manual else 'Tự động'))
+        if 'calendar.upsert' in capabilities and settings.get('outlook_enabled', 'true') == 'true':
+            try:
+                from pm_bridge.outlook_calendar import sync_calendar
+                count = sync_calendar(settings)
+                state_db.add_log('CALENDAR', f'Đã đồng bộ {count} lịch/cuộc họp (-30 đến +90 ngày)', 'success')
+            except Exception as error:
+                logging.exception('Calendar sync failed')
+                errors.append(f'Calendar: {error}')
         if settings.get('outlook_enabled', 'true') == 'true':
             try:
                 reader = OutlookReader(state_db, keywords=[k.strip() for k in settings['outlook_keywords'].split(',') if k.strip()])

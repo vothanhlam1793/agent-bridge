@@ -13,6 +13,12 @@ def execute_outlook(command, settings):
         app = win32com.client.Dispatch('Outlook.Application')
         namespace = app.GetNamespace('MAPI')
         kind, payload = command['type'], command['payload']
+        if kind == 'outlook.calendar.read':
+            from .outlook_calendar import collect
+            return collect(namespace, payload)
+        if kind == 'outlook.calendar.create':
+            from .outlook_calendar import create
+            return create(namespace, command)
         if kind == 'outlook.attachment':
             import tempfile
             message = namespace.GetItemFromID(payload['entry_id'], payload.get('store_id', ''))

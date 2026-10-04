@@ -22,6 +22,7 @@ with connect() as db:
     db.execute('CREATE TABLE IF NOT EXISTS emails(client TEXT, id TEXT, payload TEXT, PRIMARY KEY(client,id))')
     db.execute('CREATE TABLE IF NOT EXISTS confirmations(client TEXT, id TEXT, PRIMARY KEY(client,id))')
     db.execute('CREATE TABLE IF NOT EXISTS commands(client TEXT,id TEXT,command TEXT,result TEXT,PRIMARY KEY(client,id))')
+    db.execute('CREATE TABLE IF NOT EXISTS calendar_events(client TEXT,id TEXT,payload TEXT,PRIMARY KEY(client,id))')
 db.close()
 
 def auth(request: Request):
@@ -46,7 +47,26 @@ def home():
 @app.get('/api/v1/handshake')
 def handshake(client=Depends(auth)):
     return {'protocol_version': '1.0', 'status': 'ready', 'client_id': client,
-            'capabilities': ['files.upload', 'emails.upsert', 'reports.download', 'commands.queue']}
+            'capabilities': ['files.upload', 'emails.upsert', 'reports.download', 'commands.queue', 'calendar.upsert']}
+
+@app.post('/api/v1/sync/calendar')
+async def calendar_upsert(request: Request, client=Depends(auth)):
+    payload = await request.json()
+    if not isinstance(payload, dict) or payload.get('client_id') != client:
+        raise HTTPException(422, 'Invalid calendar client')
+    events = payload.get('events')
+    if not isinstance(events, list) or len(events) > 2000 or any(
+            not isinstance(event, dict) or not isinstance(event.get('id'), str) or not event['id'] for event in events):
+        raise HTTPException(422, 'Invalid calendar events')
+    db = connect()
+    try:
+        with db:
+            for event in events:
+                db.execute('INSERT OR REPLACE INTO calendar_events VALUES(?,?,?)',
+                           (client, event['id'], json.dumps(event, ensure_ascii=False)))
+    finally:
+        db.close()
+    return {'status': 'success', 'received': len(events)}
 
 def enqueue_command(client, command):
     """Backend-only API: no public endpoint allowing agents to create server jobs."""

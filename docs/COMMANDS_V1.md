@@ -30,6 +30,8 @@ results succeed; different results for the same ID -> 409. Unknown/unassigned ID
 
 ## Commands
 
+Also supported: `outlook.calendar.create`, specified in [CALENDAR_V1.md](CALENDAR_V1.md).
+
 | Type | Required payload | Result |
 |---|---|---|
 | outlook.draft | to, subject, body (strings) | draft_saved + entry_id |

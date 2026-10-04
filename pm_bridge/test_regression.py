@@ -125,5 +125,20 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(requests.post(result_url, headers=headers, json=executor.return_value).status_code, 404)
         self.assertEqual(requests.post(result_url, headers=queue.headers, json=executor.return_value).status_code, 200)
 
+    def test_calendar_batch_replay_and_client_identity(self):
+        payload = {'client_id': 'test-client', 'events': [{'id': 'calendar-event', 'subject': 'Review'}]}
+        headers = {'Authorization': 'Bearer ' + hub.KEY, 'X-Client-ID': 'test-client'}
+        for _ in range(2):
+            response = requests.post(self.url + '/api/v1/sync/calendar', headers=headers, json=payload)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()['received'], 1)
+        db = hub.connect()
+        try:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM calendar_events WHERE client=?', ('test-client',)).fetchone()[0], 1)
+        finally:
+            db.close()
+        payload['client_id'] = 'other-client'
+        self.assertEqual(requests.post(self.url + '/api/v1/sync/calendar', headers=headers, json=payload).status_code, 422)
+
 if __name__ == '__main__':
     unittest.main()

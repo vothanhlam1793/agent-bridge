@@ -7,7 +7,7 @@ from urllib.parse import quote
 import requests
 from .outlook_commands import run_isolated
 
-KINDS = {'outlook.draft', 'outlook.send', 'outlook.reply', 'outlook.attachment'}
+KINDS = {'outlook.draft', 'outlook.send', 'outlook.reply', 'outlook.attachment', 'outlook.calendar.create'}
 
 
 def validate(command):
@@ -16,6 +16,10 @@ def validate(command):
     kind, payload = command.get('type'), command.get('payload')
     if kind not in KINDS or not isinstance(payload, dict):
         raise ValueError('Unsupported command type or payload')
+    if kind == 'outlook.calendar.create':
+        from .outlook_calendar import validate_create
+        validate_create(payload)
+        return
     required = ('entry_id',) if kind == 'outlook.attachment' else ('entry_id', 'body') if kind == 'outlook.reply' else ('to', 'subject', 'body')
     if any(not isinstance(payload.get(key), str) for key in required):
         raise ValueError('Missing command fields')
