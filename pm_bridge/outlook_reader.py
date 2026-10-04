@@ -98,6 +98,7 @@ class OutlookReader:
 
                 email_data = {
                     "entry_id": entry_id,
+                    "store_id": str(inbox.StoreID),
                     "subject": subject,
                     "sender_name": sender_name,
                     "sender_email": sender_email,

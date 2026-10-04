@@ -17,6 +17,7 @@ from pm_bridge.outlook_reader import OutlookReader
 from pm_bridge.file_sync import FileSync
 from pm_bridge.report_downloader import ReportDownloader
 from pm_bridge.protocol import handshake
+from pm_bridge.command_queue import CommandQueue
 import requests
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException
@@ -65,7 +66,11 @@ def perform_sync_core(is_manual=False):
     try:
         settings = state_db.get_all_settings()
         # No mailbox/file collection before successful authenticated preflight.
-        handshake(settings)
+        capabilities = handshake(settings)['capabilities']
+        if 'commands.queue' in capabilities and settings.get('outlook_enabled', 'true') == 'true':
+            count = CommandQueue(settings, state_db.db_path).poll(stop_worker)
+            if count:
+                state_db.add_log('COMMAND', f'Đã trả kết quả {count} lệnh Outlook; xem bảng lệnh để biết thành công/lỗi/chưa rõ', 'info')
         headers = {'Authorization': 'Bearer ' + settings['api_key'], 'X-Client-ID': settings['client_id']}
         state_db.add_log('SYNC', 'Bắt đầu: ' + ('Thủ công' if is_manual else 'Tự động'))
         if settings.get('outlook_enabled', 'true') == 'true':
@@ -125,6 +130,18 @@ def index(request: Request):
 @app.get('/api/settings')
 def get_settings():
     return state_db.get_all_settings()
+
+@app.get('/api/commands')
+def command_history():
+    import sqlite3
+    from contextlib import closing
+    queue = CommandQueue(state_db.get_all_settings(), state_db.db_path)
+    with closing(sqlite3.connect(state_db.db_path)) as db:
+        rows = db.execute('SELECT id,response FROM command_journal WHERE scope=? ORDER BY rowid DESC LIMIT 50', (queue.scope,)).fetchall()
+    import json
+    # Attachment bytes are kept for receipt retries, not included in dashboard history.
+    return [{'id': key, 'status': json.loads(value)['status'],
+             'result': {k: v for k, v in json.loads(value)['result'].items() if k != 'content_base64'}} for key, value in rows]
 
 @app.post('/api/settings')
 async def save_settings(request: Request):

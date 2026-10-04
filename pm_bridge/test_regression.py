@@ -106,5 +106,24 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertEqual(requests.get(self.url + '/api/v1/reports/pending', params={'client_id': 'x'}).status_code, 401)
 
+    def test_command_queue_receipt_retry_and_isolation(self):
+        from pm_bridge.command_queue import CommandQueue
+        from unittest.mock import Mock
+        command = {'id': 'integration-job', 'type': 'outlook.draft', 'payload': {'to': 'test@example.com', 'subject': 'test', 'body': 'text'}}
+        hub.enqueue_command('test-client', command)
+        executor = Mock(return_value={'status': 'succeeded', 'result': {'outcome': 'draft_saved'}})
+        queue = CommandQueue(self.settings, ROOT / 'commands.db', executor)
+        with patch('pm_bridge.command_queue.requests.post', side_effect=requests.ConnectionError('ack lost')):
+            with self.assertRaises(requests.ConnectionError):
+                queue.poll()
+        self.assertEqual(queue.poll(), 1)
+        self.assertEqual(queue.poll(), 0)
+        executor.assert_called_once()
+        headers = {'Authorization': 'Bearer ' + hub.KEY, 'X-Client-ID': 'other-client'}
+        self.assertEqual(requests.get(self.url + '/api/v1/commands/pending', headers=headers).json(), {'commands': []})
+        result_url = self.url + '/api/v1/commands/integration-job/result'
+        self.assertEqual(requests.post(result_url, headers=headers, json=executor.return_value).status_code, 404)
+        self.assertEqual(requests.post(result_url, headers=queue.headers, json=executor.return_value).status_code, 200)
+
 if __name__ == '__main__':
     unittest.main()

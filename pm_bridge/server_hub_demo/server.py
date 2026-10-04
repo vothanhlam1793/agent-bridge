@@ -21,6 +21,7 @@ def connect():
 with connect() as db:
     db.execute('CREATE TABLE IF NOT EXISTS emails(client TEXT, id TEXT, payload TEXT, PRIMARY KEY(client,id))')
     db.execute('CREATE TABLE IF NOT EXISTS confirmations(client TEXT, id TEXT, PRIMARY KEY(client,id))')
+    db.execute('CREATE TABLE IF NOT EXISTS commands(client TEXT,id TEXT,command TEXT,result TEXT,PRIMARY KEY(client,id))')
 db.close()
 
 def auth(request: Request):
@@ -45,7 +46,50 @@ def home():
 @app.get('/api/v1/handshake')
 def handshake(client=Depends(auth)):
     return {'protocol_version': '1.0', 'status': 'ready', 'client_id': client,
-            'capabilities': ['files.upload', 'emails.upsert', 'reports.download']}
+            'capabilities': ['files.upload', 'emails.upsert', 'reports.download', 'commands.queue']}
+
+def enqueue_command(client, command):
+    """Backend-only API: no public endpoint allowing agents to create server jobs."""
+    from pm_bridge.command_queue import validate
+    validate(command)
+    db = connect()
+    try:
+        with db:
+            existing = db.execute('SELECT command FROM commands WHERE client=? AND id=?', (client, command['id'])).fetchone()
+            encoded = json.dumps(command, sort_keys=True)
+            if existing and existing[0] != encoded:
+                raise ValueError('Command ID already exists with different payload')
+            db.execute('INSERT OR IGNORE INTO commands VALUES(?,?,?,NULL)', (client, command['id'], encoded))
+    finally:
+        db.close()
+
+@app.get('/api/v1/commands/pending')
+def pending_commands(client=Depends(auth)):
+    db = connect()
+    try:
+        rows = db.execute('SELECT command FROM commands WHERE client=? AND result IS NULL ORDER BY rowid LIMIT 10', (client,)).fetchall()
+        return {'commands': [json.loads(row[0]) for row in rows]}
+    finally:
+        db.close()
+
+@app.post('/api/v1/commands/{command_id}/result')
+async def command_result(command_id: str, request: Request, client=Depends(auth)):
+    payload = await request.json()
+    if payload.get('status') not in ('succeeded', 'failed', 'uncertain') or not isinstance(payload.get('result'), dict):
+        raise HTTPException(422, 'Invalid command result')
+    db = connect()
+    try:
+        with db:
+            row = db.execute('SELECT result FROM commands WHERE client=? AND id=?', (client, command_id)).fetchone()
+            if row is None:
+                raise HTTPException(404)
+            encoded = json.dumps(payload, sort_keys=True)
+            if row[0] is not None and row[0] != encoded:
+                raise HTTPException(409, 'Result already committed')
+            db.execute('UPDATE commands SET result=? WHERE client=? AND id=?', (encoded, client, command_id))
+    finally:
+        db.close()
+    return {'status': 'acknowledged'}
 
 @app.put('/api/v1/sync/files')
 async def upload(request: Request, source_id: str, relative_path: str, sha256: str, client=Depends(auth)):

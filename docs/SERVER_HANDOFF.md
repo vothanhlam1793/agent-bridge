@@ -61,3 +61,7 @@ the production backend must enforce this to avoid a publish/download race.
 - Staging environment and results for the acceptance scenarios above.
 
 Canonical contract: [SERVER_PROTOCOL_V1.md](SERVER_PROTOCOL_V1.md).
+
+New optional capability: [commands.queue](COMMANDS_V1.md). Server queues Outlook jobs;
+Bridge executes locally and reports durable results. Implement pending/result endpoints,
+immutable IDs and uncertain-result handling before enabling this capability.

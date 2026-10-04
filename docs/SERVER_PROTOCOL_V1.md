@@ -1,6 +1,8 @@
 # Agent Bridge — Server protocol 1.0
 
 Status: agreed implementation contract for this repository. Base prefix `/api/v1`.
+Optional server-to-agent Outlook commands are specified in [COMMANDS_V1.md](COMMANDS_V1.md),
+negotiated through capability `commands.queue` without changing version 1.0.
 JSON is UTF-8; file bodies are raw bytes. Client initiates every connection; no inbound
 port on the Windows workstation is required. Reports use polling, not server push.
 

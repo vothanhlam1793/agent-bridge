@@ -7,6 +7,7 @@ and downloading reports from a central server. Includes local web dashboard and 
 
 1. [Server integration contract v1](docs/SERVER_PROTOCOL_V1.md) — normative wire contract.
 2. [Server handoff checklist](docs/SERVER_HANDOFF.md) — implementation and acceptance criteria.
+   [Server-to-Bridge commands](docs/COMMANDS_V1.md) — Outlook draft/send/reply/attachment queue.
 3. `pm_bridge/server_hub_demo/server.py` — executable reference implementation, not a production server.
 4. [Operations review](pm_bridge/OPERATIONS_REVIEW.md) — known lifecycle/UI limitations.
 
@@ -40,7 +41,7 @@ Reference server refuses to start without a key. Real deployment needs HTTPS and
 
 ```powershell
 .venv\Scripts\python -m pip install httpx pyinstaller
-.venv\Scripts\python -m unittest pm_bridge.test_regression -v
+.venv\Scripts\python -m unittest pm_bridge.test_commands pm_bridge.test_regression -v
 .venv\Scripts\python pm_bridge/build_exe.py
 ```
 
