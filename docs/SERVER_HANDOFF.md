@@ -1,5 +1,9 @@
 # Server team handoff
 
+LATEST: [EMAIL_ARCHIVE_V1.md](EMAIL_ARCHIVE_V1.md) supersedes the legacy Inbox-only
+collection below. Implement emails.archive capability and archive endpoints before using
+the newest client with Outlook enabled. Keep commands/calendar extensions as documented.
+
 ## Goal
 
 Receive original project files and email text from Windows agents. Backend owns extraction,

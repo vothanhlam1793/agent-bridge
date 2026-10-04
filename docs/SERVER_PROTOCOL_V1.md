@@ -1,5 +1,8 @@
 # Agent Bridge — Server protocol 1.0
 
+Email archival extension: [EMAIL_ARCHIVE_V1.md](EMAIL_ARCHIVE_V1.md). New clients require
+emails.archive for Outlook collection; the email batch endpoint below is legacy compatibility.
+
 Status: agreed implementation contract for this repository. Base prefix `/api/v1`.
 Optional server-to-agent Outlook commands are specified in [COMMANDS_V1.md](COMMANDS_V1.md),
 negotiated through capability `commands.queue` without changing version 1.0.

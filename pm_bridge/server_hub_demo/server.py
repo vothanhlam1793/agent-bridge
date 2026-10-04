@@ -23,6 +23,8 @@ with connect() as db:
     db.execute('CREATE TABLE IF NOT EXISTS confirmations(client TEXT, id TEXT, PRIMARY KEY(client,id))')
     db.execute('CREATE TABLE IF NOT EXISTS commands(client TEXT,id TEXT,command TEXT,result TEXT,PRIMARY KEY(client,id))')
     db.execute('CREATE TABLE IF NOT EXISTS calendar_events(client TEXT,id TEXT,payload TEXT,PRIMARY KEY(client,id))')
+    db.execute('CREATE TABLE IF NOT EXISTS archive_folders(client TEXT,id TEXT,payload TEXT,PRIMARY KEY(client,id))')
+    db.execute('CREATE TABLE IF NOT EXISTS archive_versions(client TEXT,id TEXT,version TEXT,payload TEXT,PRIMARY KEY(client,id,version))')
 db.close()
 
 def auth(request: Request):
@@ -47,7 +49,86 @@ def home():
 @app.get('/api/v1/handshake')
 def handshake(client=Depends(auth)):
     return {'protocol_version': '1.0', 'status': 'ready', 'client_id': client,
-            'capabilities': ['files.upload', 'emails.upsert', 'reports.download', 'commands.queue', 'calendar.upsert']}
+            'capabilities': ['files.upload', 'emails.upsert', 'reports.download', 'commands.queue', 'calendar.upsert', 'emails.archive']}
+
+@app.post('/api/v1/archive/folders')
+async def archive_folders(request: Request, client=Depends(auth)):
+    payload = await request.json()
+    folders = payload.get('folders')
+    if payload.get('client_id') != client or not isinstance(folders, list) or any(
+            not isinstance(folder, dict) or not isinstance(folder.get('id'), str) for folder in folders):
+        raise HTTPException(422, 'Invalid folder inventory')
+    db = connect()
+    try:
+        with db:
+            for folder in folders:
+                db.execute('INSERT OR REPLACE INTO archive_folders VALUES(?,?,?)', (client, folder['id'], json.dumps(folder)))
+    finally:
+        db.close()
+    return {'status': 'success', 'received': len(folders)}
+
+@app.post('/api/v1/archive/emails')
+async def archive_email(request: Request, client=Depends(auth)):
+    payload = await request.json()
+    mail = payload.get('email')
+    if payload.get('client_id') != client or not isinstance(mail, dict) or any(
+            not isinstance(mail.get(key), str) or not mail[key] for key in ('id', 'version', 'folder_id', 'entry_id', 'store_id')):
+        raise HTTPException(422, 'Invalid archived email')
+    try:
+        blobs = [mail['original_msg']] + [a['blob'] for a in mail['attachments']]
+        for blob in blobs:
+            digest = blob['sha256']
+            if (len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest)
+                    or blob['source_id'] != 'mailarchive' or blob['relative_path'] != digest):
+                raise ValueError()
+            path = client_dir(client) / 'uploads' / 'mailarchive' / digest
+            if not path.is_file() or path.stat().st_size != blob['size']:
+                raise ValueError()
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(422, 'Upload all archive blobs before committing metadata')
+    db = connect()
+    try:
+        with db:
+            # Immutable receipt: replay preserves previously committed version.
+            db.execute('INSERT OR IGNORE INTO archive_versions VALUES(?,?,?,?)',
+                       (client, mail['id'], mail['version'], json.dumps(mail, ensure_ascii=False)))
+    finally:
+        db.close()
+    return {'status': 'success', 'id': mail['id'], 'version': mail['version']}
+
+@app.get('/api/v1/archive/folders')
+def list_archive_folders(client=Depends(auth)):
+    db = connect()
+    try:
+        return {'folders': [json.loads(row[0]) for row in db.execute('SELECT payload FROM archive_folders WHERE client=?', (client,))]}
+    finally:
+        db.close()
+
+@app.get('/api/v1/archive/emails')
+def list_archive_emails(offset: int = 0, limit: int = 100, folder_id: str = '', client=Depends(auth)):
+    if offset < 0 or not 1 <= limit <= 500:
+        raise HTTPException(422, 'Invalid pagination')
+    db = connect()
+    try:
+        # Version pagination intentionally retains moved/deleted mail history.
+        query = 'SELECT payload FROM archive_versions WHERE client=?'
+        args = [client]
+        if folder_id:
+            query += " AND json_extract(payload, '$.folder_id')=?"
+            args.append(folder_id)
+        rows = db.execute(query + ' ORDER BY rowid LIMIT ? OFFSET ?', (*args, limit, offset)).fetchall()
+        return {'emails': [json.loads(row[0]) for row in rows], 'next_offset': offset + len(rows) if len(rows) == limit else None}
+    finally:
+        db.close()
+
+@app.get('/api/v1/archive/blobs/{digest}')
+def archive_blob(digest: str, client=Depends(auth)):
+    if len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
+        raise HTTPException(422, 'Invalid digest')
+    path = client_dir(client) / 'uploads' / 'mailarchive' / digest
+    if not path.is_file():
+        raise HTTPException(404)
+    return FileResponse(path, media_type='application/octet-stream')
 
 @app.post('/api/v1/sync/calendar')
 async def calendar_upsert(request: Request, client=Depends(auth)):
@@ -113,6 +194,9 @@ async def command_result(command_id: str, request: Request, client=Depends(auth)
 
 @app.put('/api/v1/sync/files')
 async def upload(request: Request, source_id: str, relative_path: str, sha256: str, client=Depends(auth)):
+    if source_id == 'mailarchive' and (relative_path != sha256 or len(sha256) != 64
+                                     or any(c not in '0123456789abcdef' for c in sha256)):
+        raise HTTPException(422, 'Archive blobs must be content-addressed')
     parts = PurePosixPath(relative_path).parts
     if (not source_id.isalnum() or len(source_id) > 64 or not parts or
         PurePosixPath(relative_path).is_absolute() or any(p in ('.', '..') for p in parts) or

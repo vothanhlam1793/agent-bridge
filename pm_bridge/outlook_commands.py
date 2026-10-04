@@ -13,6 +13,9 @@ def execute_outlook(command, settings):
         app = win32com.client.Dispatch('Outlook.Application')
         namespace = app.GetNamespace('MAPI')
         kind, payload = command['type'], command['payload']
+        if kind == 'outlook.archive.sync':
+            from .mail_archive import Archive
+            return Archive(settings).run(namespace)
         if kind == 'outlook.calendar.read':
             from .outlook_calendar import collect
             return collect(namespace, payload)

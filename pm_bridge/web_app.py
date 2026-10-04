@@ -83,16 +83,16 @@ def perform_sync_core(is_manual=False):
                 errors.append(f'Calendar: {error}')
         if settings.get('outlook_enabled', 'true') == 'true':
             try:
-                reader = OutlookReader(state_db, keywords=[k.strip() for k in settings['outlook_keywords'].split(',') if k.strip()])
-                emails = reader.fetch_new_emails(max_items=500, lookback_days=int(settings['outlook_lookback_days']))
-                if emails:
-                    with requests.post(settings['server_url'].rstrip('/') + '/api/v1/sync/emails',
-                                       json={'client_id': settings['client_id'], 'count': len(emails), 'emails': emails},
-                                       headers=headers, timeout=(5, 60)) as response:
-                        response.raise_for_status()
-                    for email in emails:
-                        state_db.mark_email_synced(email['entry_id'], email['subject'], email['sender_email'], email['received_time'])
-                    emails_count = len(emails)
+                if 'emails.archive' not in capabilities:
+                    raise ValueError('Hub cần hỗ trợ emails.archive để lưu toàn bộ thư; cập nhật server theo EMAIL_ARCHIVE_V1.md')
+                from pm_bridge.outlook_commands import run_isolated
+                archived = run_isolated({'id': 'archive-sweep', 'type': 'outlook.archive.sync', 'payload': {}}, settings, timeout=300)
+                if archived['status'] != 'succeeded':
+                    raise RuntimeError(archived['result'].get('error', 'Archive worker failed'))
+                result = archived['result']
+                emails_count = result['archived']
+                errors.extend(result['errors'])
+                state_db.add_log('ARCHIVE', f"{result['folders']} thư mục; đã xét {result['scanned']} mục; lưu {emails_count} thư. Tiếp tục quét ở lượt sau.", 'info')
             except Exception as error:
                 logging.exception('Outlook sync failed')
                 errors.append(f'Outlook: {error}')
@@ -192,7 +192,9 @@ async def save_settings(request: Request):
 
 @app.get('/api/stats')
 def stats():
-    return {**state_db.get_stats(), 'syncing': sync_lock.locked()}
+    from pm_bridge.mail_archive import Archive
+    archive = Archive(state_db.get_all_settings()).stats()
+    return {**state_db.get_stats(), **archive, 'synced_emails': archive['archived_emails'], 'syncing': sync_lock.locked()}
 
 @app.get('/api/logs')
 def logs():

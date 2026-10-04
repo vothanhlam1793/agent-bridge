@@ -37,7 +37,7 @@ class RegressionTests(unittest.TestCase):
         assert cls.server.started
         cls.ui = TestClient(web.app)
         cls.upload = ROOT / 'source'
-        cls.upload.mkdir()
+        cls.upload.mkdir(exist_ok=True)
         cls.download = cls.upload / 'downloads'
         cls.settings = {'server_url': cls.url, 'api_key': hub.KEY, 'client_id': 'test-client',
                         'excel_watch_folders': str(cls.upload), 'reports_download_folder': str(cls.download),
