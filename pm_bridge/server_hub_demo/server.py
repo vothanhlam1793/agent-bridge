@@ -1,0 +1,143 @@
+"""Reference hub: durable storage, original-file upload and report downloads."""
+import os
+import json
+import sqlite3
+import hashlib
+import secrets
+import uuid
+from pathlib import Path, PurePosixPath
+from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi.responses import FileResponse
+
+ROOT = Path(os.getenv('PM_HUB_DATA_DIR', str(Path(__file__).resolve().parent / 'data')))
+ROOT.mkdir(parents=True, exist_ok=True)
+KEY = os.getenv('BRIDGE_API_KEY', '')
+if not KEY:
+    raise RuntimeError('Set BRIDGE_API_KEY before starting the reference server')
+
+def connect():
+    return sqlite3.connect(ROOT / 'hub.db', timeout=30)
+
+with connect() as db:
+    db.execute('CREATE TABLE IF NOT EXISTS emails(client TEXT, id TEXT, payload TEXT, PRIMARY KEY(client,id))')
+    db.execute('CREATE TABLE IF NOT EXISTS confirmations(client TEXT, id TEXT, PRIMARY KEY(client,id))')
+db.close()
+
+def auth(request: Request):
+    if not secrets.compare_digest(request.headers.get('Authorization', ''), 'Bearer ' + KEY):
+        raise HTTPException(401, 'Invalid API key')
+    client = request.headers.get('X-Client-ID', '')
+    if not client:
+        raise HTTPException(400, 'Missing client ID')
+    return client
+
+def client_dir(client):
+    path = ROOT / hashlib.sha256(client.encode()).hexdigest()[:24]
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+app = FastAPI(title='PM Bridge Reference Hub')
+
+@app.get('/')
+def home():
+    return {'status': 'running'}
+
+@app.get('/api/v1/handshake')
+def handshake(client=Depends(auth)):
+    return {'protocol_version': '1.0', 'status': 'ready', 'client_id': client,
+            'capabilities': ['files.upload', 'emails.upsert', 'reports.download']}
+
+@app.put('/api/v1/sync/files')
+async def upload(request: Request, source_id: str, relative_path: str, sha256: str, client=Depends(auth)):
+    parts = PurePosixPath(relative_path).parts
+    if (not source_id.isalnum() or len(source_id) > 64 or not parts or
+        PurePosixPath(relative_path).is_absolute() or any(p in ('.', '..') for p in parts) or
+        any(c in relative_path for c in '\\:<>"|?*')):
+        raise HTTPException(422, 'Invalid relative path')
+    base = (client_dir(client) / 'uploads' / source_id).resolve()
+    target = base.joinpath(*parts).resolve()
+    if not target.is_relative_to(base):
+        raise HTTPException(422, 'Invalid target')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name + '.' + uuid.uuid4().hex + '.part')
+    digest = hashlib.sha256()
+    try:
+        with temporary.open('xb') as output:
+            async for chunk in request.stream():
+                output.write(chunk)
+                digest.update(chunk)
+        if digest.hexdigest() != sha256:
+            raise HTTPException(422, 'Checksum mismatch')
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return {'status': 'success', 'sha256': sha256}
+
+@app.post('/api/v1/sync/emails')
+async def emails(request: Request, client=Depends(auth)):
+    payload = await request.json()
+    if payload.get('client_id') != client or not isinstance(payload.get('emails'), list):
+        raise HTTPException(422, 'Invalid payload')
+    if payload.get('count') != len(payload['emails']) or any(
+            not isinstance(item, dict) or not isinstance(item.get('entry_id'), str)
+            or not item['entry_id'] for item in payload['emails']):
+        raise HTTPException(422, 'Invalid email batch')
+    db = connect()
+    try:
+        with db:
+            for item in payload['emails']:
+                db.execute('INSERT OR REPLACE INTO emails VALUES(?,?,?)',
+                           (client, item['entry_id'], json.dumps(item, ensure_ascii=False)))
+    finally:
+        db.close()
+    return {'status': 'success', 'received': len(payload['emails'])}
+
+def report_list(client):
+    folder = client_dir(client) / 'reports'
+    folder.mkdir(exist_ok=True)
+    reports = []
+    for path in folder.iterdir():
+        if path.is_file() and not path.name.endswith('.part'):
+            with path.open('rb') as stream:
+                digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+            report_id = hashlib.sha256(json.dumps([client, path.name, digest]).encode()).hexdigest()
+            reports.append({'id': report_id, 'filename': path.name, 'sha256': digest, '_path': path})
+    return reports
+
+@app.get('/api/v1/reports/pending')
+def pending(client_id: str, client=Depends(auth)):
+    if client_id != client:
+        raise HTTPException(403)
+    db = connect()
+    try:
+        confirmed = {r[0] for r in db.execute('SELECT id FROM confirmations WHERE client=?', (client,))}
+    finally:
+        db.close()
+    return {'reports': [{k: v for k, v in r.items() if k != '_path'}
+                        for r in report_list(client) if r['id'] not in confirmed]}
+
+@app.get('/api/v1/reports/download/{report_id}')
+def download(report_id: str, client=Depends(auth)):
+    report = next((r for r in report_list(client) if r['id'] == report_id), None)
+    if report is None:
+        raise HTTPException(404)
+    return FileResponse(report['_path'], filename=report['filename'])
+
+@app.post('/api/v1/reports/confirm')
+async def confirm(request: Request, client=Depends(auth)):
+    payload = await request.json()
+    if payload.get('client_id') != client:
+        raise HTTPException(403)
+    if payload.get('report_id') not in {r['id'] for r in report_list(client)}:
+        raise HTTPException(404)
+    db = connect()
+    try:
+        with db:
+            db.execute('INSERT OR IGNORE INTO confirmations VALUES(?,?)', (client, payload['report_id']))
+    finally:
+        db.close()
+    return {'status': 'confirmed'}
+
+if __name__ == '__main__':
+    import uvicorn
+    uvicorn.run(app, host='127.0.0.1', port=8000)
